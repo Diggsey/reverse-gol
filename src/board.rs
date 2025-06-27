@@ -8,6 +8,8 @@ pub struct Board {
     stride: usize,
 }
 
+const MIN_SIZE: usize = 4;
+
 impl Debug for Board {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for row in self.iter_rows() {
@@ -58,21 +60,21 @@ impl Board {
     pub fn trim(&mut self) {
         let mut w = self.width();
         let mut h = self.height();
-        while self.iter_rows().all(|row| !row[w - 1]) && w > 2 {
+        while self.iter_rows().all(|row| !row[w - 1]) && w > MIN_SIZE {
             self.bits.retain(|x, _| x % self.stride != w - 1);
             self.stride -= 1;
             w -= 1;
         }
-        while self.iter_rows().all(|row| !row[0]) && w > 2 {
+        while self.iter_rows().all(|row| !row[0]) && w > MIN_SIZE {
             self.bits.retain(|x, _| x % self.stride != 0);
             self.stride -= 1;
             w -= 1;
         }
-        while !self.bits[(self.bits.len() - self.stride)..self.bits.len()].any() && h > 2 {
+        while !self.bits[(self.bits.len() - self.stride)..self.bits.len()].any() && h > MIN_SIZE {
             self.bits.truncate(self.bits.len() - self.stride);
             h -= 1;
         }
-        while !self.bits[0..self.stride].any() && h > 2 {
+        while !self.bits[0..self.stride].any() && h > MIN_SIZE {
             self.bits.drain(0..self.stride);
             h -= 1;
         }

@@ -7,13 +7,13 @@ mod board;
 mod miniboard;
 mod state;
 
-const NUM_STEPS: usize = 8;
+const NUM_STEPS: usize = 16;
 const BUDGET_FACTOR: usize = 2000;
 const MAX_SOLUTIONS: usize = 1000000;
 const MIN_SOLUTIONS: usize = 5;
 const SEARCH_BREADTH: usize = 250;
 const ADDITIONAL_STEPS: usize = 0;
-
+const PRINT_SOLUTIONS: usize = 1;
 fn compute_previous(mut boards: Vec<Board>, index: &ReverseIndex, steps: usize) -> Vec<Board> {
     for i in 0..steps {
         let mut current_budget_factor = BUDGET_FACTOR;
@@ -63,26 +63,16 @@ fn compute_previous(mut boards: Vec<Board>, index: &ReverseIndex, steps: usize) 
         results.truncate(SEARCH_BREADTH);
 
         for (j, mut board) in results.iter().cloned().enumerate() {
-            let initial_board = board.clone();
             for _ in 0..i + 1 + ADDITIONAL_STEPS {
-                if j < 10 {
+                if j < PRINT_SOLUTIONS {
                     println!("{:?}", board);
                 }
                 board = board.simulate();
             }
-            if j < 10 {
+            if j < PRINT_SOLUTIONS {
                 println!("{:?}", board);
                 println!("--------------------");
                 println!();
-            }
-            if board.live_count() != 30 {
-                dbg!(&boards);
-                dbg!(&initial_board);
-                dbg!(&board);
-                panic!(
-                    "Something went wrong, expected 30 live cells, got {}",
-                    board.live_count()
-                );
             }
         }
 

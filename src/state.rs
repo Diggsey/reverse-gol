@@ -1,6 +1,6 @@
 use bitvec::vec::BitVec;
 use metrohash::MetroHashSet;
-use smallvec::SmallVec;
+use smallvec::{SmallVec, smallvec};
 
 use crate::{
     board::Board,
@@ -16,17 +16,21 @@ pub struct State {
 #[derive(Debug)]
 struct CellState {
     b2: B2,
-    options: Option<Vec<B4>>,
+    options: Option<SmallVec<[B4; 1]>>,
     priority: usize,
+    weight: usize,
 }
+
+const INITIAL_WEIGHT: usize = 1000;
+const WEIGHT_ADJUST: usize = 10;
 
 impl CellState {
     fn options<'a, 'b: 'a>(&'a self, index: &'b ReverseIndex) -> &'a [B4] {
-        self.options.as_ref().unwrap_or(&index[self.b2])
+        self.options.as_deref().unwrap_or(&index[self.b2])
     }
     pub fn recompute_priority(&mut self, index: &ReverseIndex) {
         if self.priority != usize::MAX {
-            self.priority = self.options(index).len();
+            self.priority = self.options(index).len() + self.weight;
         }
     }
 }
@@ -83,7 +87,8 @@ impl State {
                 new_board.push(CellState {
                     b2,
                     options: None,
-                    priority: index[b2].len(),
+                    priority: index[b2].len() + INITIAL_WEIGHT,
+                    weight: INITIAL_WEIGHT,
                 });
             }
         }
@@ -155,22 +160,29 @@ impl State {
             })
             .min_by_key(|&(_, _, priority)| priority)
             .unwrap();
+        let idx = y * w + x;
 
         if priority == usize::MAX && *desired_solutions > 0 {
             *desired_solutions -= 1;
             result.insert(self.generate_solution(index));
             return true;
         } else if priority == 0 || *allowance == 0 || *desired_solutions == 0 {
+            if priority == 0 {
+                self.board[idx].weight = self.board[idx].weight.saturating_sub(WEIGHT_ADJUST);
+                self.board[idx].recompute_priority(index);
+            }
             // No solution possible
             return false;
         }
         *allowance -= 1;
 
         let mut success = false;
-        self.board[y * w + x].priority = usize::MAX;
-        for opt_index in 0..priority {
-            let opt = self.board[y * w + x].options(index)[opt_index];
-            let original_options = self.board[y * w + x].options.replace(vec![opt]);
+        self.board[idx].priority = usize::MAX;
+
+        let num_opts = self.board[idx].options(index).len();
+        for opt_index in 0..num_opts {
+            let opt = self.board[idx].options(index)[opt_index];
+            let original_options = self.board[idx].options.replace(smallvec![opt]);
 
             let mut saved_options = SmallVec::<[_; 4]>::new();
             let directions: [(i32, i32); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
@@ -180,7 +192,7 @@ impl State {
                 let ny = y.wrapping_add(dy as usize);
                 if nx < w && ny < h {
                     let current_opts = self.board[ny * w + nx].options(index);
-                    let new_opts: Vec<_> = current_opts
+                    let new_opts: SmallVec<_> = current_opts
                         .iter()
                         .copied()
                         .filter(|other| opt.is_compatible_with(*other, dx, dy))
@@ -207,9 +219,9 @@ impl State {
                 }
             }
 
-            self.board[y * w + x].options = original_options;
+            self.board[idx].options = original_options;
         }
-        self.board[y * w + x].priority = priority;
+        self.board[idx].priority = priority;
         success
     }
 }
