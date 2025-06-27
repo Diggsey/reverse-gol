@@ -1,20 +1,24 @@
 use metrohash::MetroHashSet;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator as _};
+use typenum::U5;
 
 use crate::{board::Board, miniboard::ReverseIndex, state::State};
 
+mod bit_array;
 mod board;
 mod miniboard;
 mod state;
 
-const NUM_STEPS: usize = 16;
+type N = U5;
+const NUM_STEPS: usize = 8;
 const BUDGET_FACTOR: usize = 2000;
 const MAX_SOLUTIONS: usize = 1000000;
 const MIN_SOLUTIONS: usize = 5;
 const SEARCH_BREADTH: usize = 250;
 const ADDITIONAL_STEPS: usize = 0;
 const PRINT_SOLUTIONS: usize = 1;
-fn compute_previous(mut boards: Vec<Board>, index: &ReverseIndex, steps: usize) -> Vec<Board> {
+
+fn compute_previous(mut boards: Vec<Board>, index: &ReverseIndex<N>, steps: usize) -> Vec<Board> {
     for i in 0..steps {
         let mut current_budget_factor = BUDGET_FACTOR;
         let mut desired_solutions = (MAX_SOLUTIONS / boards.len()).max(MIN_SOLUTIONS);
@@ -29,6 +33,7 @@ fn compute_previous(mut boards: Vec<Board>, index: &ReverseIndex, steps: usize) 
                     let mut state = State::new(board, index);
 
                     state.clear_borders(index);
+
                     let mut partial_results = MetroHashSet::default();
                     let mut budget_used = budget;
                     let mut solutions_used = desired_solutions;

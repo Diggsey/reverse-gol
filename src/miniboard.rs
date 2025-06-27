@@ -1,54 +1,108 @@
-use std::{fmt::Debug, ops::Index};
+use std::{
+    fmt::Debug,
+    hash::Hash,
+    ops::{Index, Mul, Sub},
+};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct B2(u8);
+use typenum::{Diff, Square, ToInt, U2};
 
-impl Debug for B2 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "B2({:02b})", self.0)
-    }
+use crate::bit_array::{BitArray, BitArraySize};
+
+pub trait MiniboardSize:
+    Sized + Mul<Output: BitArraySize> + ToInt<usize> + Copy + Clone + PartialEq + Eq + Hash
+{
+}
+impl<N: Mul<Output: BitArraySize> + ToInt<usize> + Copy + Clone + PartialEq + Eq + Hash>
+    MiniboardSize for N
+{
 }
 
+pub trait MacroboardSize: MiniboardSize + Sub<U2, Output: MiniboardSize> {}
+impl<N: MiniboardSize + Sub<U2, Output: MiniboardSize>> MacroboardSize for N {}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct B4(u16);
+pub struct B<N: MiniboardSize>(BitArray<Square<N>>);
 
-impl Debug for B4 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "B4({:016b})", self.0)
+impl<N: MiniboardSize> B<N> {
+    pub const EMPTY: Self = B(BitArray::ZERO);
+
+    fn h_mask() -> BitArray<Square<N>> {
+        !BitArray(
+            <BitArray<Square<N>>>::MAX.0
+                / (<BitArray<Square<N>>>::MAX.0 >> (N::INT * N::INT - N::INT)),
+        )
     }
-}
 
-macro_rules! impl_b {
-    ($name:ident, $n:literal) => {
-        #[allow(unused)]
-        impl $name {
-            pub fn empty() -> Self {
-                $name(0)
-            }
-            pub fn get(&self, x: usize, y: usize) -> bool {
-                debug_assert!(x < $n && y < $n);
-                (self.0 & (1 << (y * $n + x))) != 0
-            }
-            pub fn set(&mut self, x: usize, y: usize, value: bool) {
-                debug_assert!(x < $n && y < $n);
-                if value {
-                    self.0 |= 1 << (y * $n + x);
-                } else {
-                    self.0 &= !(1 << (y * $n + x));
-                }
-            }
+    fn v_mask() -> BitArray<Square<N>> {
+        BitArray((<BitArray<Square<N>>>::MAX.0 << N::INT) & <BitArray<Square<N>>>::MAX.0)
+    }
+
+    pub fn get(&self, x: usize, y: usize) -> bool {
+        debug_assert!(x < N::INT && y < N::INT);
+        self.0.get(y * N::INT + x)
+    }
+
+    pub fn set(&mut self, x: usize, y: usize, value: bool) {
+        debug_assert!(x < N::INT && y < N::INT);
+        self.0.set(y * N::INT + x, value);
+    }
+
+    pub fn shift_left(mut self, n: usize) -> Self {
+        for _ in 0..n {
+            self.0 &= Self::h_mask();
+            self.0 <<= 1;
         }
-    };
+        self
+    }
+    pub fn shift_right(mut self, n: usize) -> Self {
+        for _ in 0..n {
+            self.0 >>= 1;
+            self.0 &= Self::h_mask();
+        }
+        self
+    }
+    pub fn shift_up(mut self, n: usize) -> Self {
+        self.0 <<= N::INT * n;
+        self
+    }
+    pub fn shift_down(mut self, n: usize) -> Self {
+        self.0 >>= N::INT * n;
+        self.0 &= Self::v_mask();
+        self
+    }
+
+    pub fn can_be_left_of(self, other: Self) -> bool {
+        self.0 & Self::h_mask() == other.shift_right(1).0
+    }
+    pub fn can_be_above(self, other: Self) -> bool {
+        self.0 & Self::v_mask() == other.shift_down(1).0
+    }
+    pub fn is_compatible_with(self, other: Self, dx: i32, dy: i32) -> bool {
+        match (dx, dy) {
+            (1, 0) => self.can_be_left_of(other),
+            (0, 1) => self.can_be_above(other),
+            (-1, 0) => other.can_be_left_of(self),
+            (0, -1) => other.can_be_above(self),
+            _ => false,
+        }
+    }
+    #[inline(always)]
+    pub fn live_count(self) -> u32 {
+        self.0.count_ones()
+    }
 }
 
-impl_b!(B2, 2);
-impl_b!(B4, 4);
+impl<N: MiniboardSize> Debug for B<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "B{}{:?}", N::INT, self.0)
+    }
+}
 
-impl B4 {
-    pub fn step(self) -> B2 {
-        let mut result = B2::empty();
-        for y in 0..2 {
-            for x in 0..2 {
+impl<N: MacroboardSize> B<N> {
+    pub fn step(self) -> B<Diff<N, U2>> {
+        let mut result = B::<Diff<N, U2>>::EMPTY;
+        for y in 0..(N::INT - 2) {
+            for x in 0..(N::INT - 2) {
                 let neighbor_count = self.get(x, y) as usize
                     + self.get(x, y + 1) as usize
                     + self.get(x, y + 2) as usize
@@ -66,67 +120,33 @@ impl B4 {
         }
         result
     }
-    pub fn shift_left(self) -> B4 {
-        const MASK: u16 = 0b0111_0111_0111_0111;
-        B4((self.0 >> 1) & MASK)
-    }
-    pub fn shift_right(self) -> B4 {
-        const MASK: u16 = 0b1110_1110_1110_1110;
-        B4((self.0 << 1) & MASK)
-    }
-    pub fn shift_up(self) -> B4 {
-        const MASK: u16 = 0b0000_1111_1111_1111;
-        B4((self.0 >> 4) & MASK)
-    }
-    pub fn shift_down(self) -> B4 {
-        const MASK: u16 = 0b1111_1111_1111_0000;
-        B4((self.0 << 4) & MASK)
-    }
-    pub fn can_be_left_of(self, other: B4) -> bool {
-        const MASK: u16 = 0b1110_1110_1110_1110;
-        self.0 & MASK == (other.0 << 1) & MASK
-    }
-    pub fn can_be_above(self, other: B4) -> bool {
-        const MASK: u16 = 0b1111_1111_1111_0000;
-        self.0 & MASK == (other.0 << 4) & MASK
-    }
-    pub fn is_compatible_with(self, other: B4, dx: i32, dy: i32) -> bool {
-        match (dx, dy) {
-            (1, 0) => self.can_be_left_of(other),
-            (0, 1) => self.can_be_above(other),
-            (-1, 0) => other.can_be_left_of(self),
-            (0, -1) => other.can_be_above(self),
-            _ => false,
-        }
-    }
-    pub fn live_count(self) -> u32 {
-        self.0.count_ones()
-    }
 }
 
 #[derive(Debug)]
-pub struct ReverseIndex(Vec<Vec<B4>>);
+pub struct ReverseIndex<N: MacroboardSize>(Vec<Vec<B<N>>>);
 
-impl ReverseIndex {
+impl<N: MacroboardSize> ReverseIndex<N> {
     pub fn compute() -> Self {
         let mut index = Vec::new();
-        index.resize(1 << 16, Vec::new());
-        for b4 in (0..=0b1111_1111_1111_1111).map(B4) {
-            let b2 = b4.step();
+        let size = 1 << <Square<N>>::INT;
+        index.resize(size as usize, Vec::new());
+        for i in 0..size {
+            let b: B<N> = B(BitArray::from_u64(i));
+            let b_small = b.step();
 
-            index[b2.0 as usize].push(b4);
+            index[b_small.0.to_u64() as usize].push(b);
         }
         for item in &mut index {
-            item.sort_by_key(|b4| b4.live_count());
+            item.sort_by_key(|b| b.live_count());
         }
         ReverseIndex(index)
     }
 }
 
-impl Index<B2> for ReverseIndex {
-    type Output = Vec<B4>;
+impl<N: MacroboardSize> Index<B<Diff<N, U2>>> for ReverseIndex<N> {
+    type Output = Vec<B<N>>;
 
-    fn index(&self, b2: B2) -> &Self::Output {
-        &self.0[b2.0 as usize]
+    fn index(&self, b_small: B<Diff<N, U2>>) -> &Self::Output {
+        &self.0[b_small.0.to_u64() as usize]
     }
 }

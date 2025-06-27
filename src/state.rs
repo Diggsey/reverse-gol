@@ -1,22 +1,23 @@
 use bitvec::vec::BitVec;
 use metrohash::MetroHashSet;
 use smallvec::{SmallVec, smallvec};
+use typenum::{Diff, U2};
 
 use crate::{
     board::Board,
-    miniboard::{B2, B4, ReverseIndex},
+    miniboard::{B, MacroboardSize, ReverseIndex},
 };
 
 #[derive(Debug)]
-pub struct State {
-    board: Vec<CellState>,
+pub struct State<N: MacroboardSize> {
+    board: Vec<CellState<N>>,
     stride: usize,
 }
 
 #[derive(Debug)]
-struct CellState {
-    b2: B2,
-    options: Option<SmallVec<[B4; 1]>>,
+struct CellState<N: MacroboardSize> {
+    mini_b: B<Diff<N, U2>>,
+    options: Option<SmallVec<[B<N>; 1]>>,
     priority: usize,
     weight: usize,
 }
@@ -24,25 +25,25 @@ struct CellState {
 const INITIAL_WEIGHT: usize = 1000;
 const WEIGHT_ADJUST: usize = 10;
 
-impl CellState {
-    fn options<'a, 'b: 'a>(&'a self, index: &'b ReverseIndex) -> &'a [B4] {
-        self.options.as_deref().unwrap_or(&index[self.b2])
+impl<N: MacroboardSize> CellState<N> {
+    fn options<'a, 'b: 'a>(&'a self, index: &'b ReverseIndex<N>) -> &'a [B<N>] {
+        self.options.as_deref().unwrap_or(&index[self.mini_b])
     }
-    pub fn recompute_priority(&mut self, index: &ReverseIndex) {
+    pub fn recompute_priority(&mut self, index: &ReverseIndex<N>) {
         if self.priority != usize::MAX {
             self.priority = self.options(index).len() + self.weight;
         }
     }
 }
 
-impl State {
-    fn iter_rows(&self) -> impl Iterator<Item = &[CellState]> {
+impl<N: MacroboardSize> State<N> {
+    fn iter_rows(&self) -> impl Iterator<Item = &[CellState<N>]> {
         self.board.chunks(self.stride)
     }
     fn generate_solution_row(
         &self,
-        index: &ReverseIndex,
-        row: &[CellState],
+        index: &ReverseIndex<N>,
+        row: &[CellState<N>],
         y2: usize,
         output: &mut BitVec,
     ) {
@@ -51,41 +52,41 @@ impl State {
             debug_assert_eq!(opts.len(), 1, "Expected exactly one option",);
             let opt = opts[0];
             if x == 0 {
-                for x2 in 0..3 {
+                for x2 in 0..(N::INT - 1) {
                     output.push(opt.get(x2, y2));
                 }
             }
-            output.push(opt.get(3, y2));
+            output.push(opt.get(N::INT - 1, y2));
         }
     }
-    fn generate_solution(&self, index: &ReverseIndex) -> Board {
+    fn generate_solution(&self, index: &ReverseIndex<N>) -> Board {
         let mut solution = BitVec::new();
         for (y, row) in self.iter_rows().enumerate() {
             if y == 0 {
-                for y2 in 0..3 {
+                for y2 in 0..(N::INT - 1) {
                     self.generate_solution_row(index, row, y2, &mut solution);
                 }
             }
-            self.generate_solution_row(index, row, 3, &mut solution);
+            self.generate_solution_row(index, row, N::INT - 1, &mut solution);
         }
-        let mut result = Board::new(solution, self.stride + 3);
+        let mut result = Board::new(solution, self.stride + N::INT - 1);
         result.trim();
         result
     }
-    pub fn new(board: &Board, index: &ReverseIndex) -> Self {
+    pub fn new(board: &Board, index: &ReverseIndex<N>) -> Self {
         let mut new_board = Vec::new();
-        for y in 0..board.height() - 1 {
-            for x in 0..board.width() - 1 {
-                let mut b2 = B2::empty();
-                for dy in 0..2 {
-                    for dx in 0..2 {
+        for y in 0..board.height() + 3 - N::INT {
+            for x in 0..board.width() + 3 - N::INT {
+                let mut b2 = B::EMPTY;
+                for dy in 0..(N::INT - 2) {
+                    for dx in 0..(N::INT - 2) {
                         if board.get(x + dx, y + dy) {
                             b2.set(dx, dy, true);
                         }
                     }
                 }
                 new_board.push(CellState {
-                    b2,
+                    mini_b: b2,
                     options: None,
                     priority: index[b2].len() + INITIAL_WEIGHT,
                     weight: INITIAL_WEIGHT,
@@ -94,10 +95,10 @@ impl State {
         }
         Self {
             board: new_board,
-            stride: board.width() - 1,
+            stride: board.width() + 3 - N::INT,
         }
     }
-    pub fn clear_borders(&mut self, index: &ReverseIndex) {
+    pub fn clear_borders(&mut self, index: &ReverseIndex<N>) {
         let w = self.stride;
         let h = self.board.len() / w;
         for y in 0..h {
@@ -106,7 +107,7 @@ impl State {
                     .options(index)
                     .iter()
                     .copied()
-                    .filter(|b4| b4.shift_right().shift_right().step() == B2::empty())
+                    .filter(|b4| b4.shift_right(N::INT - 2).step() == B::EMPTY)
                     .collect(),
             );
             self.board[y * w].recompute_priority(index);
@@ -115,7 +116,7 @@ impl State {
                     .options(index)
                     .iter()
                     .copied()
-                    .filter(|b4| b4.shift_left().shift_left().step() == B2::empty())
+                    .filter(|b4| b4.shift_left(N::INT - 2).step() == B::EMPTY)
                     .collect(),
             );
             self.board[y * w + w - 1].recompute_priority(index);
@@ -126,7 +127,7 @@ impl State {
                     .options(index)
                     .iter()
                     .copied()
-                    .filter(|b4| b4.shift_down().shift_down().step() == B2::empty())
+                    .filter(|b4| b4.shift_down(N::INT - 2).step() == B::EMPTY)
                     .collect(),
             );
             self.board[x].recompute_priority(index);
@@ -135,7 +136,7 @@ impl State {
                     .options(index)
                     .iter()
                     .copied()
-                    .filter(|b4| b4.shift_up().shift_up().step() == B2::empty())
+                    .filter(|b4| b4.shift_up(N::INT - 2).step() == B::EMPTY)
                     .collect(),
             );
             self.board[(h - 1) * w + x].recompute_priority(index);
@@ -143,7 +144,7 @@ impl State {
     }
     pub fn solve(
         &mut self,
-        index: &ReverseIndex,
+        index: &ReverseIndex<N>,
         result: &mut MetroHashSet<Board>,
         allowance: &mut usize,
         desired_solutions: &mut usize,
