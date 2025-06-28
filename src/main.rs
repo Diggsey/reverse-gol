@@ -1,22 +1,43 @@
 use metrohash::MetroHashSet;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator as _};
-use typenum::U5;
 
-use crate::{board::Board, miniboard::ReverseIndex, state::State};
+use crate::{board::Board, reverse_index::ReverseIndex, state::State};
 
 mod bit_array;
 mod board;
 mod miniboard;
+mod reverse_index;
 mod state;
 
-type N = U5;
-const NUM_STEPS: usize = 8;
+type N = typenum::U5;
+const NUM_STEPS: usize = 16;
 const BUDGET_FACTOR: usize = 2000;
 const MAX_SOLUTIONS: usize = 1000000;
 const MIN_SOLUTIONS: usize = 5;
 const SEARCH_BREADTH: usize = 250;
 const ADDITIONAL_STEPS: usize = 0;
 const PRINT_SOLUTIONS: usize = 1;
+const PARALLEL: bool = true;
+
+fn solve_board(
+    board: &Board,
+    index: &ReverseIndex<N>,
+    current_budget_factor: usize,
+    desired_solutions: usize,
+    results: &mut MetroHashSet<Board>,
+) {
+    let board_area = board.width() * board.height();
+    let budget = board_area * current_budget_factor;
+
+    let mut state = State::new(board, index);
+
+    state.clear_borders(index);
+
+    let mut budget_used = budget;
+    let mut solutions_used = desired_solutions;
+
+    state.solve(index, results, &mut budget_used, &mut solutions_used);
+}
 
 fn compute_previous(mut boards: Vec<Board>, index: &ReverseIndex<N>, steps: usize) -> Vec<Board> {
     for i in 0..steps {
@@ -24,30 +45,35 @@ fn compute_previous(mut boards: Vec<Board>, index: &ReverseIndex<N>, steps: usiz
         let mut desired_solutions = (MAX_SOLUTIONS / boards.len()).max(MIN_SOLUTIONS);
         let mut attempts = 0;
         let results = loop {
-            let results = boards
-                .par_iter()
-                .map(|board| {
-                    let board_area = board.width() * board.height();
-                    let budget = board_area * current_budget_factor;
-
-                    let mut state = State::new(board, index);
-
-                    state.clear_borders(index);
-
-                    let mut partial_results = MetroHashSet::default();
-                    let mut budget_used = budget;
-                    let mut solutions_used = desired_solutions;
-
-                    state.solve(
+            let results = if PARALLEL {
+                boards
+                    .par_iter()
+                    .map(|board| {
+                        let mut partial_results = MetroHashSet::default();
+                        solve_board(
+                            board,
+                            index,
+                            current_budget_factor,
+                            desired_solutions,
+                            &mut partial_results,
+                        );
+                        partial_results
+                    })
+                    .flatten()
+                    .collect::<MetroHashSet<_>>()
+            } else {
+                let mut results = MetroHashSet::default();
+                for board in &boards {
+                    solve_board(
+                        board,
                         index,
-                        &mut partial_results,
-                        &mut budget_used,
-                        &mut solutions_used,
+                        current_budget_factor,
+                        desired_solutions,
+                        &mut results,
                     );
-                    partial_results
-                })
-                .flatten()
-                .collect::<MetroHashSet<_>>();
+                }
+                results
+            };
             if results.len() >= SEARCH_BREADTH || (attempts > 0 && !results.is_empty()) {
                 break results;
             }
