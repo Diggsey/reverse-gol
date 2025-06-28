@@ -266,4 +266,13 @@ impl<N: MacroboardSize> State<N> {
 
         success
     }
+
+    pub fn score(&self, index: &ReverseIndex<N>) -> usize {
+        (self
+            .board
+            .iter()
+            .map(|cell| cell.key.options(index).len() as u64)
+            .sum::<u64>()
+            / self.board.len() as u64) as usize
+    }
 }

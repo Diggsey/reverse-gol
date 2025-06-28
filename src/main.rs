@@ -7,9 +7,9 @@ mod reverse_index;
 mod state;
 mod work_queue;
 
-type N = typenum::U5;
+type N = typenum::U4;
 const NUM_STEPS: usize = 16;
-const BUDGET_FACTOR: usize = 100000;
+const BUDGET_FACTOR: usize = 10000;
 const PARALLEL: bool = true;
 
 fn main() {

@@ -1,5 +1,4 @@
 use std::{
-    collections::BinaryHeap,
     sync::{Arc, Condvar, Mutex},
     thread,
     time::Duration,
@@ -18,23 +17,28 @@ struct WorkItem<N: MacroboardSize> {
     priority: isize,
 }
 
-fn compute_priority(step: usize, live_count: usize, size: usize) -> isize {
-    (step as isize + 10) * (step as isize + 10) * 10 - (live_count as isize) - (size as isize)
+fn compute_priority(step: usize, live_count: usize, _size: usize, _score: usize) -> isize {
+    (step as isize + 10) * 20 - (live_count as isize)
 }
 
 impl<N: MacroboardSize> WorkItem<N> {
     fn new(board: Board, index: &ReverseIndex<N>, step: usize) -> Self {
+        let state = State::new(&board, index);
         Self {
-            state: State::new(&board, index),
+            priority: compute_priority(step, board.live_count(), board.size(), state.score(index)),
+            state,
             step,
-            priority: compute_priority(step, board.live_count(), board.size()),
         }
     }
     fn advance(&mut self, index: &ReverseIndex<N>, results: &mut MetroHashSet<Board>) {
-        if self.state.advance(index, results, BUDGET_FACTOR) {
-            self.priority -= 1;
+        if self.state.advance(
+            index,
+            results,
+            BUDGET_FACTOR * (self.step + 1) * (self.step + 1),
+        ) {
+            self.priority += 1;
         } else {
-            self.priority -= 50;
+            self.priority -= 15;
         }
     }
 }
@@ -59,14 +63,63 @@ impl<N: MacroboardSize> PartialEq for WorkItem<N> {
     }
 }
 
+const MAX_LIST_LEN: usize = 1000;
+
+#[derive(Default)]
+struct PriorityQueue<N: MacroboardSize> {
+    items: Vec<Vec<WorkItem<N>>>,
+}
+
+impl<N: MacroboardSize> PriorityQueue<N> {
+    fn push(&mut self, item: WorkItem<N>) -> bool {
+        while self.items.len() <= item.step {
+            self.items.push(Vec::new());
+        }
+        let list = &mut self.items[item.step];
+        list.push(item);
+        list.sort();
+        if list.len() > MAX_LIST_LEN {
+            list.remove(0);
+            false
+        } else {
+            true
+        }
+    }
+    fn pop(&mut self) -> Option<WorkItem<N>> {
+        if let Some((_, idx)) = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, item)| {
+                item.last().map(|x| {
+                    (
+                        x.priority - self.items.get(i + 1).map(|v| v.len()).unwrap_or(0) as isize,
+                        i,
+                    )
+                })
+            })
+            .max_by_key(|x| x.0)
+        {
+            self.items[idx].pop()
+        } else {
+            None
+        }
+    }
+    fn is_empty(&self) -> bool {
+        self.items.iter().all(|list| list.is_empty())
+    }
+}
+
 struct WorkQueueInner<N: MacroboardSize> {
-    heap: BinaryHeap<WorkItem<N>>,
+    heap: PriorityQueue<N>,
     item_count: usize,
+    processed_count: usize,
     terminated: bool,
 }
 
 struct WorkQueueState {
     seen_boards: MetroHashSet<(usize, Board)>,
+    completed_counts: Vec<usize>,
     best_step: usize,
 }
 
@@ -74,6 +127,7 @@ impl WorkQueueState {
     fn new() -> Self {
         Self {
             seen_boards: MetroHashSet::default(),
+            completed_counts: Vec::new(),
             best_step: 0,
         }
     }
@@ -115,12 +169,21 @@ impl<N: MacroboardSize> WorkQueue<N> {
     }
     fn add_item(&self, item: WorkItem<N>) {
         let mut queue = self.queue.lock().unwrap();
-        queue.heap.push(item);
-        queue.item_count += 1;
+        if queue.heap.push(item) {
+            queue.item_count += 1;
+        }
         self.condvar.notify_one();
+    }
+    fn record_completed(&self, step: usize) {
+        let mut state = self.state.lock().unwrap();
+        if step >= state.completed_counts.len() {
+            state.completed_counts.resize(step + 1, 0);
+        }
+        state.completed_counts[step] += 1;
     }
     fn complete_item(&self) {
         let mut queue = self.queue.lock().unwrap();
+        queue.processed_count += 1;
         if queue.item_count > 0 {
             queue.item_count -= 1;
             if queue.item_count == 0 {
@@ -154,7 +217,9 @@ impl<N: MacroboardSize> WorkQueue<N> {
                 self.add_item(WorkItem::new(result.clone(), &self.index, item.step + 1));
             }
 
-            if !item.state.is_done() {
+            if item.state.is_done() {
+                self.record_completed(item.step);
+            } else {
                 self.add_item(item);
             }
             self.complete_item();
@@ -164,8 +229,9 @@ impl<N: MacroboardSize> WorkQueue<N> {
         let queue = Arc::new(WorkQueue::<N> {
             index: ReverseIndex::<N>::compute(),
             queue: Mutex::new(WorkQueueInner {
-                heap: BinaryHeap::new(),
+                heap: PriorityQueue::default(),
                 item_count: 0,
+                processed_count: 0,
                 terminated: false,
             }),
             state: Mutex::new(WorkQueueState::new()),
@@ -207,7 +273,27 @@ impl<N: MacroboardSize> WorkQueue<N> {
                 for (step, _) in &state.seen_boards {
                     counts[*step] += 1;
                 }
-                println!("    {} active items... {:?}", queue.item_count, counts);
+                let queue_counts = queue
+                    .heap
+                    .items
+                    .iter()
+                    .map(|list| list.len())
+                    .collect::<Vec<_>>();
+                let priorities = queue
+                    .heap
+                    .items
+                    .iter()
+                    .map(|list| list.last().map_or(0, |item| item.priority))
+                    .collect::<Vec<_>>();
+                println!(
+                    "{} active items... ({} processed) \n    Queue: {:?}\n    Priorities: {:?}\n    Found: {:?}\n    Complete: {:?}\n",
+                    queue.item_count,
+                    queue.processed_count,
+                    queue_counts,
+                    priorities,
+                    counts,
+                    state.completed_counts
+                );
             }
         }
     }
