@@ -19,6 +19,9 @@ pub trait MiniboardSize:
     + Hash
     + Default
     + Debug
+    + Send
+    + Sync
+    + 'static
 {
 }
 impl<
@@ -30,7 +33,10 @@ impl<
         + Eq
         + Hash
         + Default
-        + Debug,
+        + Debug
+        + Send
+        + Sync
+        + 'static,
 > MiniboardSize for N
 {
 }

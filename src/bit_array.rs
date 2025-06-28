@@ -30,9 +30,19 @@ impl_bit_array_sizes! {
 }
 
 pub trait BitArraySize:
-    ToInt<usize> + typenum::Unsigned + Copy + Clone + Debug + PartialEq + Eq + Hash
+    ToInt<usize>
+    + typenum::Unsigned
+    + Copy
+    + Clone
+    + Debug
+    + PartialEq
+    + Eq
+    + Hash
+    + Send
+    + Sync
+    + 'static
 {
-    type T: PrimInt + Unsigned + Hash + ConstZero + ConstOne + Display;
+    type T: PrimInt + Unsigned + Hash + ConstZero + ConstOne + Display + Send + Sync + 'static;
     const MASK: Self::T;
 }
 

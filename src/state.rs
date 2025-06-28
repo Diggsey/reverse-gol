@@ -10,10 +10,31 @@ use crate::{
     reverse_index::{Constraint, Direction, ReverseIndex, ReverseIndexKey},
 };
 
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+enum InstructionPointer {
+    #[default]
+    Call,
+    LoopStart,
+    LoopMiddle,
+    LoopEnd,
+    Return,
+}
+
+#[derive(Default, Debug)]
+struct StackFrame<N: MacroboardSize> {
+    ip: InstructionPointer,
+    idx: usize,
+    priority: usize,
+    opt_index: usize,
+    saved_options: SmallVec<[ReverseIndexKey<N>; 4]>,
+    original_options: ReverseIndexKey<N>,
+}
 #[derive(Debug)]
 pub struct State<N: MacroboardSize> {
     board: Vec<CellState<N>>,
     stride: usize,
+    stack: Vec<StackFrame<N>>,
+    frame: StackFrame<N>,
 }
 
 #[derive(Debug)]
@@ -91,10 +112,15 @@ impl<N: MacroboardSize> State<N> {
                 });
             }
         }
-        Self {
+        let stride = board.width() + 3 - N::INT;
+        let mut result = Self {
             board: new_board,
-            stride: board.width() + 3 - N::INT,
-        }
+            stride,
+            stack: Vec::with_capacity(stride * stride),
+            frame: StackFrame::default(),
+        };
+        result.clear_borders(index);
+        result
     }
     pub fn clear_borders(&mut self, index: &ReverseIndex<N>) {
         let w = self.stride;
@@ -129,43 +155,25 @@ impl<N: MacroboardSize> State<N> {
             self.board[(h - 1) * w + x].recompute_priority(index);
         }
     }
-    pub fn solve(
+
+    pub fn is_done(&self) -> bool {
+        self.frame.ip == InstructionPointer::Return && self.stack.is_empty()
+    }
+
+    pub fn advance(
         &mut self,
         index: &ReverseIndex<N>,
         result: &mut MetroHashSet<Board>,
-        allowance: &mut usize,
-        desired_solutions: &mut usize,
+        steps: usize,
     ) -> bool {
-        #[derive(Default)]
-        enum InstructionPointer {
-            #[default]
-            Call,
-            LoopStart,
-            LoopMiddle,
-            LoopEnd,
-            Return,
-        }
-
-        #[derive(Default)]
-        struct StackFrame<N: MacroboardSize> {
-            ip: InstructionPointer,
-            idx: usize,
-            priority: usize,
-            opt_index: usize,
-            saved_options: SmallVec<[ReverseIndexKey<N>; 4]>,
-            original_options: ReverseIndexKey<N>,
-        }
-
         let w = self.stride;
         let h = self.board.len() / w;
-        let mut stack = Vec::<StackFrame<N>>::new();
-        let mut frame = StackFrame::<N>::default();
         let mut success = false;
 
-        loop {
-            match frame.ip {
+        for _ in 0..steps {
+            match self.frame.ip {
                 InstructionPointer::Call => {
-                    (frame.idx, frame.priority) = self
+                    (self.frame.idx, self.frame.priority) = self
                         .board
                         .iter()
                         .enumerate()
@@ -173,41 +181,37 @@ impl<N: MacroboardSize> State<N> {
                         .min_by_key(|&(_, priority)| priority)
                         .unwrap();
 
-                    if frame.priority == usize::MAX && *desired_solutions > 0 {
+                    if self.frame.priority == usize::MAX {
                         // Found solution
-                        *desired_solutions -= 1;
                         result.insert(self.generate_solution(index));
                         success = true;
-                        frame.ip = InstructionPointer::Return;
+                        self.frame.ip = InstructionPointer::Return;
                         continue;
-                    } else if self.board[frame.idx].key.options(index).is_empty()
-                        || *allowance == 0
-                        || *desired_solutions == 0
-                    {
-                        if frame.priority == 0 {
-                            self.board[frame.idx].weight =
-                                self.board[frame.idx].weight.saturating_sub(WEIGHT_ADJUST);
-                            self.board[frame.idx].recompute_priority(index);
-                        }
+                    } else if self.board[self.frame.idx].key.options(index).is_empty() {
+                        self.board[self.frame.idx].weight = self.board[self.frame.idx]
+                            .weight
+                            .saturating_sub(WEIGHT_ADJUST);
+                        self.board[self.frame.idx].recompute_priority(index);
                         // No solution possible
-                        frame.ip = InstructionPointer::Return;
+                        self.frame.ip = InstructionPointer::Return;
                         continue;
                     }
-                    *allowance -= 1;
 
-                    self.board[frame.idx].priority = usize::MAX;
+                    self.board[self.frame.idx].priority = usize::MAX;
 
-                    frame.ip = InstructionPointer::LoopStart;
+                    self.frame.ip = InstructionPointer::LoopStart;
                 }
                 InstructionPointer::LoopStart => {
-                    let opt = self.board[frame.idx].key.options(index)[frame.opt_index];
-                    frame.original_options =
-                        mem::replace(&mut self.board[frame.idx].key, ReverseIndexKey::one(opt));
+                    let opt = self.board[self.frame.idx].key.options(index)[self.frame.opt_index];
+                    self.frame.original_options = mem::replace(
+                        &mut self.board[self.frame.idx].key,
+                        ReverseIndexKey::one(opt),
+                    );
 
                     let mut conflicting = false;
                     for dir in Direction::ALL {
-                        let nx = (frame.idx % w).wrapping_add(dir.dx() as usize);
-                        let ny = (frame.idx / w).wrapping_add(dir.dy() as usize);
+                        let nx = (self.frame.idx % w).wrapping_add(dir.dx() as usize);
+                        let ny = (self.frame.idx / w).wrapping_add(dir.dy() as usize);
                         if nx < w && ny < h {
                             let new_opts = self.board[ny * w + nx]
                                 .key
@@ -218,41 +222,41 @@ impl<N: MacroboardSize> State<N> {
                             let prev_opts =
                                 mem::replace(&mut self.board[ny * w + nx].key, new_opts);
                             self.board[ny * w + nx].recompute_priority(index);
-                            frame.saved_options.push(prev_opts);
+                            self.frame.saved_options.push(prev_opts);
                         }
                     }
-                    frame.ip = InstructionPointer::LoopMiddle;
+                    self.frame.ip = InstructionPointer::LoopMiddle;
                     if !conflicting {
-                        stack.push(mem::take(&mut frame));
+                        self.stack.push(mem::take(&mut self.frame));
                     }
                 }
                 InstructionPointer::LoopMiddle => {
-                    frame.saved_options.reverse();
+                    self.frame.saved_options.reverse();
                     for dir in Direction::ALL {
-                        let nx = (frame.idx % w).wrapping_add(dir.dx() as usize);
-                        let ny = (frame.idx / w).wrapping_add(dir.dy() as usize);
+                        let nx = (self.frame.idx % w).wrapping_add(dir.dx() as usize);
+                        let ny = (self.frame.idx / w).wrapping_add(dir.dy() as usize);
                         if nx < w && ny < h {
-                            self.board[ny * w + nx].key = frame.saved_options.pop().unwrap();
+                            self.board[ny * w + nx].key = self.frame.saved_options.pop().unwrap();
                             self.board[ny * w + nx].recompute_priority(index);
                         }
                     }
 
-                    self.board[frame.idx].key = mem::take(&mut frame.original_options);
+                    self.board[self.frame.idx].key = mem::take(&mut self.frame.original_options);
 
-                    frame.opt_index += 1;
-                    if frame.opt_index < self.board[frame.idx].key.options(index).len() {
-                        frame.ip = InstructionPointer::LoopStart;
+                    self.frame.opt_index += 1;
+                    if self.frame.opt_index < self.board[self.frame.idx].key.options(index).len() {
+                        self.frame.ip = InstructionPointer::LoopStart;
                     } else {
-                        frame.ip = InstructionPointer::LoopEnd;
+                        self.frame.ip = InstructionPointer::LoopEnd;
                     }
                 }
                 InstructionPointer::LoopEnd => {
-                    self.board[frame.idx].priority = frame.priority;
-                    frame.ip = InstructionPointer::Return;
+                    self.board[self.frame.idx].priority = self.frame.priority;
+                    self.frame.ip = InstructionPointer::Return;
                 }
                 InstructionPointer::Return => {
-                    if let Some(f) = stack.pop() {
-                        frame = f;
+                    if let Some(f) = self.stack.pop() {
+                        self.frame = f;
                     } else {
                         break;
                     }
